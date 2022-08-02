@@ -22,9 +22,7 @@ def parse(val):
     if isinstance(val, str):
         val = val.replace(',', '')
     val = float(val)
-    if val.is_integer():
-        return int(val)
-    return val
+    return int(val) if val.is_integer() else val
 
 
 class ClassPropertyDescriptor:
@@ -71,11 +69,10 @@ class YahooFinanceHistory:
         response = self.session.get(self.crumb_link.format(self.symbol), timeout=self.timeout)
         response.raise_for_status()
         sleep(0.5)
-        match = re.search(self.crumb_regex, response.text)
-        if not match:
-            raise ValueError('Could not get crumb from Yahoo Finance')
+        if match := re.search(self.crumb_regex, response.text):
+            self.crumb = match[1]
         else:
-            self.crumb = match.group(1)
+            raise ValueError('Could not get crumb from Yahoo Finance')
 
     def get_quote(self):
         try:
@@ -114,7 +111,7 @@ class Stock:
     def _yahoo(self, quote, exchange=None):
         """ Collects data from Yahoo Finance API """
 
-        query = quote + "." + exchange.upper() if exchange else quote
+        query = f"{quote}.{exchange.upper()}" if exchange else quote
 
         if not hasattr(self, '_session_y'):
             self._session_y = requests.Session()
@@ -140,7 +137,7 @@ class Stock:
     def _google(self, quote, exchange=None):
         """ Collects data from Google Finance API """
 
-        query = exchange.upper() + ":" + quote if exchange else quote
+        query = f"{exchange.upper()}:{quote}" if exchange else quote
 
         params = {'output': 'json', 'q': query}
 
@@ -177,7 +174,7 @@ class Stock:
         self.__init__(self._attempted_ticker, exchange=self._attempted_exchange, source=self.source)
 
     def __repr__(self):
-        return 'Stock(ticker=%s, price=%s)' % (self.ticker, self.price)
+        return f'Stock(ticker={self.ticker}, price={self.price})'
 
     @property
     def price(self):
@@ -234,13 +231,15 @@ class Option:
                 self._exp.remove(self._expiration)
                 self._has_run = False
 
-            if all((d, m, y)) and not self._has_run and not strict:
-                closest_date = min(self._exp, key=lambda x: abs(x - self._expiration))
-                print('No options listed for given date, using %s instead' % closest_date.strftime(DATE_FORMAT))
-                self._has_run = True
-                self.__init__(quote, closest_date.day, closest_date.month, closest_date.year, source=source)
-            else:
+            if not all((d, m, y)) or self._has_run or strict:
                 raise ValueError('Possible expiration dates for this option are:', self.expirations) from None
+            closest_date = min(self._exp, key=lambda x: abs(x - self._expiration))
+            print(
+                f'No options listed for given date, using {closest_date.strftime(DATE_FORMAT)} instead'
+            )
+
+            self._has_run = True
+            self.__init__(quote, closest_date.day, closest_date.month, closest_date.year, source=source)
 
     def _yahoo(self, quote, d, m, y):
         """ Collects data from Yahoo Finance API """
@@ -299,11 +298,11 @@ class Option:
                      for dic in self.data['expirations']]
 
     @classproperty
-    def rate(cls):
-        if not hasattr(cls, '_rate'):
-            cls._rate = riskfree()
+    def rate(self):
+        if not hasattr(self, '_rate'):
+            self._rate = riskfree()
 
-        return cls._rate
+        return self._rate
 
     @property
     def expiration(self):
@@ -336,20 +335,21 @@ class Call(Option):
             else:
                 if strict:
                     raise LookupError('No options listed for given strike price.')
-                else:
-                    closest_strike = min(self.strikes, key=lambda x: abs(x - strike))
-                    print('No option for given strike, using %s instead' % closest_strike)
-                    self.set_strike(closest_strike)
+                closest_strike = min(self.strikes, key=lambda x: abs(x - strike))
+                print(f'No option for given strike, using {closest_strike} instead')
+                self.set_strike(closest_strike)
 
     def set_strike(self, val):
         """ Specifies a strike price """
 
-        d = {}
-        for dic in self.data:
-            if parse(dic['strike']) == val and val in self.strikes:
-                d = dic
-                break
-        if d:
+        if d := next(
+            (
+                dic
+                for dic in self.data
+                if parse(dic['strike']) == val and val in self.strikes
+            ),
+            {},
+        ):
             self._price = parse(d.get('p')) or d.get('lastPrice')
             self.id = d.get('cid')
             self.exchange = d.get('e')
@@ -378,9 +378,16 @@ class Call(Option):
 
     def __repr__(self):
         if self.strike:
-            return self.__class__.Option_type + "(ticker=%s, expiration=%s, strike=%s)" % (self.ticker, self.expiration, self.strike)
+            return (
+                self.__class__.Option_type
+                + f"(ticker={self.ticker}, expiration={self.expiration}, strike={self.strike})"
+            )
+
         else:
-            return self.__class__.Option_type + "(ticker=%s, expiration=%s)" % (self.ticker, self.expiration)
+            return (
+                self.__class__.Option_type
+                + f"(ticker={self.ticker}, expiration={self.expiration})"
+            )
 
     def update(self):
         self.__init__(self.ticker, self._expiration.day,
